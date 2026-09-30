@@ -5,6 +5,7 @@ const SUPPLY := Vector3(-32, 0, 0)
 const BUILD := Vector3(20, 0, 0)
 const PYRAMID := Vector3(34, 0, 0)
 const SAVE_PREFIX := "user://preramid_"
+const SETTINGS_PATH := "user://preramid_settings.json"
 
 var mode := ""
 var placed := 0
@@ -46,12 +47,15 @@ var crosshair_label: Label
 var menu_panel: PanelContainer
 var shop_panel: PanelContainer
 var pause_panel: PanelContainer
+var completion_panel: PanelContainer
+var completion_text: Label
 var shop_buttons: Array[Button] = []
 var progress_bar: ProgressBar
 var sound_player: AudioStreamPlayer
 var sounds: Dictionary = {}
 
 func _ready() -> void:
+	load_settings()
 	build_world()
 	build_ui()
 	build_audio()
@@ -316,6 +320,31 @@ func refresh_pyramid() -> void:
 			mm.set_instance_transform(n, Transform3D(Basis.IDENTITY, p))
 		remaining -= count
 
+func position_for_brick(index: int) -> Vector3:
+	var remaining := index
+	for tier in range(13):
+		var side := 13 - tier
+		var count := side * side
+		if remaining < count:
+			var col := remaining % side
+			var row := remaining / side
+			return PYRAMID + Vector3((float(col) - (side - 1) * 0.5) * 1.55, 0.95 + tier * 1.27, (float(row) - (side - 1) * 0.5) * 1.55)
+		remaining -= count
+	return PYRAMID
+
+func animate_brick_placement(target: Vector3) -> void:
+	var flying := box(self, "Stone being placed", Vector3(1.54, 1.25, 1.54), player_position + Vector3(0, 1.55, 0), Color.WHITE)
+	flying.material_override = sandstone_material
+	flying.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var tween := create_tween()
+	tween.set_trans(Tween.TRANS_CUBIC)
+	tween.set_ease(Tween.EASE_OUT)
+	tween.tween_property(flying, "position", target, 0.55)
+	tween.finished.connect(func():
+		flying.queue_free()
+		refresh_pyramid()
+	)
+
 func ui_style(background: Color, border: Color, radius: int = 9, margin: float = 12.0) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = background
@@ -460,6 +489,7 @@ func build_ui() -> void:
 	volume_slider.value_changed.connect(func(value: float):
 		sound_volume_db = value
 		if sound_player != null: sound_player.volume_db = value
+		save_settings()
 	)
 	pause_box.add_child(volume_slider)
 	var mouse_text := Label.new()
@@ -470,7 +500,10 @@ func build_ui() -> void:
 	mouse_slider.max_value = 0.006
 	mouse_slider.step = 0.0001
 	mouse_slider.value = mouse_sensitivity
-	mouse_slider.value_changed.connect(func(value: float): mouse_sensitivity = value)
+	mouse_slider.value_changed.connect(func(value: float):
+		mouse_sensitivity = value
+		save_settings()
+	)
 	pause_box.add_child(mouse_slider)
 	var resume_button := Button.new()
 	resume_button.text = "เล่นต่อ (P)"
@@ -483,6 +516,34 @@ func build_ui() -> void:
 	menu_button.pressed.connect(return_to_menu)
 	pause_box.add_child(menu_button)
 	pause_panel.hide()
+	var goal_label := Label.new()
+	goal_label.text = "เป้าหมาย: สร้างให้ครบ 819 ก้อน"
+	goal_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	goal_label.add_theme_font_size_override("font_size", 18)
+	menu.add_child(goal_label)
+	completion_panel = PanelContainer.new()
+	completion_panel.theme = thai_theme
+	completion_panel.position = Vector2(392, 160)
+	completion_panel.custom_minimum_size = Vector2(500, 300)
+	layer.add_child(completion_panel)
+	var completion_box := VBoxContainer.new()
+	completion_box.add_theme_constant_override("separation", 18)
+	completion_panel.add_child(completion_box)
+	var completion_title := Label.new()
+	completion_title.text = "สร้างพีระมิดสำเร็จ!"
+	completion_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	completion_title.add_theme_font_size_override("font_size", 31)
+	completion_box.add_child(completion_title)
+	completion_text = Label.new()
+	completion_text.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	completion_text.add_theme_font_size_override("font_size", 20)
+	completion_box.add_child(completion_text)
+	var completion_button := Button.new()
+	completion_button.text = "กลับเมนู"
+	completion_button.custom_minimum_size.y = 54
+	completion_button.pressed.connect(return_to_menu)
+	completion_box.add_child(completion_button)
+	completion_panel.hide()
 
 func build_audio() -> void:
 	sound_player = AudioStreamPlayer.new()
@@ -536,7 +597,10 @@ func start_game(new_mode: String) -> void:
 	shop_panel.hide()
 	paused = false
 	pause_panel.hide()
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	completion_panel.visible = placed >= TOTAL
+	if placed >= TOTAL:
+		completion_text.text = "ขนอิฐครบ %d ก้อนในเวลา %s\nโหมด %s" % [TOTAL, format_time(), mode.to_upper()]
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if placed >= TOTAL else Input.MOUSE_MODE_CAPTURED
 	refresh_pyramid()
 	update_player_visuals()
 	set_hint("เดินไปวงแหวนที่กองอิฐด้านซ้าย แล้วกด E")
@@ -602,6 +666,7 @@ func return_to_menu() -> void:
 	mode = ""
 	paused = false
 	pause_panel.hide()
+	completion_panel.hide()
 	shop_panel.hide()
 	menu_panel.show()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -619,6 +684,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if paused: return
 	if event.keycode == KEY_M:
 		audio_muted = not audio_muted
+		save_settings()
 		set_hint("ปิดเสียงแล้ว" if audio_muted else "เปิดเสียงแล้ว")
 		return
 	if event.keycode == KEY_B and mode == "normal":
@@ -638,18 +704,24 @@ func interact() -> void:
 			carried = false
 			placed += 1
 			coins += 1
-			refresh_pyramid()
+			animate_brick_placement(position_for_brick(placed - 1))
 			update_player_visuals()
 			if placed == TOTAL:
 				play_sound("milestone")
 				set_hint("สำเร็จ! พีระมิดครบ 819 ก้อน")
+				completion_text.text = "ขนอิฐครบ %d ก้อนในเวลา %s\nโหมด %s" % [TOTAL, format_time(), mode.to_upper()]
+				completion_panel.show()
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			elif current_tier() != old_tier:
 				coins += 10
 				play_sound("milestone")
 				set_hint("สร้างชั้น %d เสร็จ! รับโบนัส 10 เหรียญ" % old_tier)
 			else:
 				play_sound("place")
-				set_hint("วางก้อนที่ %d แล้ว • กลับไปหยิบก้อนต่อไป" % placed)
+				if placed % 25 == 0:
+					set_hint("สำเร็จอีก 25 ก้อน! ตอนนี้วางแล้ว %d/%d ก้อน" % [placed, TOTAL])
+				else:
+					set_hint("วางก้อนที่ %d แล้ว • กลับไปหยิบก้อนต่อไป" % placed)
 			save_game()
 		else:
 			set_hint("ไปวงแหวนสีทองที่จุดก่อสร้างทางขวา")
@@ -706,7 +778,7 @@ func update_ui() -> void:
 	var secs := int(seconds_played) % 60
 	hud_title.text = "%s  |  ชั้น %d/13  |  %d/819 ก้อน" % [mode.to_upper(), current_tier(), placed]
 	progress_bar.value = placed
-	hud_info.text = "เวลา %02d:%02d:%02d  •  เหรียญ %d  •  %s" % [hours, minutes, secs, coins, "กำลังถืออิฐ" if carried else "มือว่าง"]
+	hud_info.text = "เวลา %02d:%02d:%02d  •  เหรียญ %d  •  %s  •  อีก %d ก้อนถึงชั้นถัดไป" % [hours, minutes, secs, coins, "กำลังถืออิฐ" if carried else "มือว่าง", bricks_to_next_tier()]
 	var destination := BUILD if carried else SUPPLY
 	var to_target := (destination - player_position).normalized()
 	var forward := Vector3(-sin(camera_yaw), 0, -cos(camera_yaw))
@@ -734,11 +806,39 @@ func current_tier() -> int:
 		remaining -= count
 	return 13
 
+func bricks_to_next_tier() -> int:
+	if placed >= TOTAL: return 0
+	var remaining := placed
+	for tier in range(13):
+		var count := (13 - tier) * (13 - tier)
+		if remaining < count: return count - remaining
+		remaining -= count
+	return 0
+
+func format_time() -> String:
+	var elapsed := int(seconds_played)
+	return "%02d:%02d:%02d" % [elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60]
+
 func save_game() -> void:
 	if mode == "": return
 	var data := {"placed": placed, "carried": carried, "seconds": seconds_played, "coins": coins, "upgrades": upgrades, "player_x": player_position.x, "player_z": player_position.z}
 	var file := FileAccess.open(SAVE_PREFIX + mode + ".json", FileAccess.WRITE)
 	if file: file.store_string(JSON.stringify(data))
+
+func save_settings() -> void:
+	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if file:
+		file.store_string(JSON.stringify({"volume_db": sound_volume_db, "mouse_sensitivity": mouse_sensitivity, "muted": audio_muted}))
+
+func load_settings() -> void:
+	if not FileAccess.file_exists(SETTINGS_PATH): return
+	var file := FileAccess.open(SETTINGS_PATH, FileAccess.READ)
+	if not file: return
+	var data = JSON.parse_string(file.get_as_text())
+	if not data is Dictionary: return
+	sound_volume_db = clampf(float(data.get("volume_db", -8.0)), -30.0, 0.0)
+	mouse_sensitivity = clampf(float(data.get("mouse_sensitivity", 0.0025)), 0.001, 0.006)
+	audio_muted = bool(data.get("muted", false))
 
 func load_game() -> void:
 	var path := SAVE_PREFIX + mode + ".json"
