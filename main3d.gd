@@ -20,7 +20,11 @@ var shop_open := false
 var camera_yaw := 0.0
 var camera_pitch := 0.0
 var storm_time := 0.0
+var storm_strength := 0.0
 var audio_muted := false
+var paused := false
+var mouse_sensitivity := 0.0025
+var sound_volume_db := -8.0
 
 var player_root: Node3D
 var carried_block: MeshInstance3D
@@ -41,6 +45,7 @@ var hud_panel: PanelContainer
 var crosshair_label: Label
 var menu_panel: PanelContainer
 var shop_panel: PanelContainer
+var pause_panel: PanelContainer
 var shop_buttons: Array[Button] = []
 var progress_bar: ProgressBar
 var sound_player: AudioStreamPlayer
@@ -400,7 +405,7 @@ func build_ui() -> void:
 	hard.pressed.connect(start_game.bind("hard"))
 	menu.add_child(hard)
 	var controls := Label.new()
-	controls.text = "เมาส์: มองรอบตัว    WASD / ลูกศร: เดิน\nE / Space: หยิบ-วาง    B: ร้าน    M: ปิดเสียง\nEsc: เมนู    บันทึกอัตโนมัติแยกแต่ละโหมด"
+	controls.text = "เมาส์: มองรอบตัว    WASD / ลูกศร: เดิน\nE / Space: หยิบ-วาง    B: ร้าน    M: ปิดเสียง\nP: พักเกม    Esc: เมนู    บันทึกอัตโนมัติ"
 	controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	menu.add_child(controls)
 	shop_panel = PanelContainer.new()
@@ -424,13 +429,64 @@ func build_ui() -> void:
 		shop.add_child(button)
 		shop_buttons.append(button)
 	var note := Label.new()
-	note.text = "ตัวช่วยเพิ่มความเร็ว\nยังขนได้ทีละก้อนเท่านั้น"
+	note.text = "รถเข็นช่วยตอนถืออิฐ\nผ้าคลุมลดแรงลมพายุ\nยังขนได้ทีละก้อนเท่านั้น"
 	shop.add_child(note)
 	shop_panel.hide()
+	pause_panel = PanelContainer.new()
+	pause_panel.theme = thai_theme
+	pause_panel.position = Vector2(450, 150)
+	pause_panel.custom_minimum_size = Vector2(380, 400)
+	layer.add_child(pause_panel)
+	var pause_box := VBoxContainer.new()
+	pause_box.add_theme_constant_override("separation", 10)
+	pause_panel.add_child(pause_box)
+	var pause_title := Label.new()
+	pause_title.text = "พักเกม"
+	pause_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pause_title.add_theme_font_size_override("font_size", 30)
+	pause_box.add_child(pause_title)
+	var pause_note := Label.new()
+	pause_note.text = "หยุดนับเวลาขณะพัก"
+	pause_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pause_box.add_child(pause_note)
+	var volume_text := Label.new()
+	volume_text.text = "ระดับเสียง"
+	pause_box.add_child(volume_text)
+	var volume_slider := HSlider.new()
+	volume_slider.min_value = -30.0
+	volume_slider.max_value = 0.0
+	volume_slider.step = 1.0
+	volume_slider.value = sound_volume_db
+	volume_slider.value_changed.connect(func(value: float):
+		sound_volume_db = value
+		if sound_player != null: sound_player.volume_db = value
+	)
+	pause_box.add_child(volume_slider)
+	var mouse_text := Label.new()
+	mouse_text.text = "ความไวเมาส์"
+	pause_box.add_child(mouse_text)
+	var mouse_slider := HSlider.new()
+	mouse_slider.min_value = 0.001
+	mouse_slider.max_value = 0.006
+	mouse_slider.step = 0.0001
+	mouse_slider.value = mouse_sensitivity
+	mouse_slider.value_changed.connect(func(value: float): mouse_sensitivity = value)
+	pause_box.add_child(mouse_slider)
+	var resume_button := Button.new()
+	resume_button.text = "เล่นต่อ (P)"
+	resume_button.custom_minimum_size.y = 48
+	resume_button.pressed.connect(toggle_pause)
+	pause_box.add_child(resume_button)
+	var menu_button := Button.new()
+	menu_button.text = "กลับเมนู"
+	menu_button.custom_minimum_size.y = 48
+	menu_button.pressed.connect(return_to_menu)
+	pause_box.add_child(menu_button)
+	pause_panel.hide()
 
 func build_audio() -> void:
 	sound_player = AudioStreamPlayer.new()
-	sound_player.volume_db = -8.0
+	sound_player.volume_db = sound_volume_db
 	add_child(sound_player)
 	for kind in ["pickup", "place", "purchase", "milestone"]:
 		sounds[kind] = make_sound(kind)
@@ -478,6 +534,8 @@ func start_game(new_mode: String) -> void:
 	menu_panel.hide()
 	shop_open = false
 	shop_panel.hide()
+	paused = false
+	pause_panel.hide()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	refresh_pyramid()
 	update_player_visuals()
@@ -485,10 +543,10 @@ func start_game(new_mode: String) -> void:
 	update_ui()
 
 func _process(delta: float) -> void:
-	if mode != "":
+	if mode != "" and not paused:
 		storm_time += delta
-		var gust := pow((sin(storm_time * 0.23) + 1.0) * 0.5, 3.0)
-		desert_environment.fog_density = 0.007 + gust * 0.008
+		storm_strength = pow((sin(storm_time * 0.23) + 1.0) * 0.5, 3.0)
+		desert_environment.fog_density = 0.007 + storm_strength * 0.008
 		sand_particles.position = player_position + Vector3(0, 2.2, 0)
 		seconds_played += delta
 		save_timer += delta
@@ -512,6 +570,9 @@ func _process(delta: float) -> void:
 			var right := Vector3(cos(camera_yaw), 0, -sin(camera_yaw))
 			var forward := Vector3(-sin(camera_yaw), 0, -cos(camera_yaw))
 			player_position += (right * movement.x - forward * movement.y) * speed * delta
+			if storm_strength > 0.55:
+				var wind_resistance := 0.2 if mode == "normal" and upgrades[2] else 1.0
+				player_position += Vector3(0.25, 0, 0.92) * storm_strength * wind_resistance * delta
 			player_position.x = clampf(player_position.x, -55, 55)
 			player_position.z = clampf(player_position.z, -29, 29)
 			player_root.rotation.y = camera_yaw
@@ -521,22 +582,41 @@ func _process(delta: float) -> void:
 	camera.rotation = Vector3(camera_pitch, camera_yaw, 0)
 
 func _unhandled_input(event: InputEvent) -> void:
-	if mode != "" and not shop_open and event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		camera_yaw -= event.relative.x * 0.0025
-		camera_pitch = clampf(camera_pitch - event.relative.y * 0.0025, -1.35, 1.35)
+	if mode != "" and not paused and not shop_open and event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		camera_yaw -= event.relative.x * mouse_sensitivity
+		camera_pitch = clampf(camera_pitch - event.relative.y * mouse_sensitivity, -1.35, 1.35)
+
+func toggle_pause() -> void:
+	if mode == "": return
+	paused = not paused
+	pause_panel.visible = paused
+	if paused:
+		shop_open = false
+		shop_panel.hide()
+		save_game()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED
+
+func return_to_menu() -> void:
+	if mode == "": return
+	save_game()
+	mode = ""
+	paused = false
+	pause_panel.hide()
+	shop_panel.hide()
+	menu_panel.show()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	update_ui()
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo: return
 	if event.keycode == KEY_ESCAPE:
-		if mode != "":
-			save_game()
-			mode = ""
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-			menu_panel.show()
-			shop_panel.hide()
-			update_ui()
+		return_to_menu()
 		return
 	if mode == "": return
+	if event.keycode == KEY_P:
+		toggle_pause()
+		return
+	if paused: return
 	if event.keycode == KEY_M:
 		audio_muted = not audio_muted
 		set_hint("ปิดเสียงแล้ว" if audio_muted else "เปิดเสียงแล้ว")
@@ -593,7 +673,7 @@ func buy_upgrade(index: int) -> void:
 	upgrades[index] = true
 	update_player_visuals()
 	play_sound("purchase")
-	set_hint("ซื้อตัวช่วยแล้ว • เดินเร็วขึ้น")
+	set_hint("ซื้อตัวช่วยแล้ว")
 	save_game()
 
 func update_player_visuals() -> void:
@@ -635,13 +715,13 @@ func update_ui() -> void:
 	var side_score := right.dot(to_target)
 	var direction := "ข้างหน้า" if front_score >= 0 else "ข้างหลัง"
 	if absf(side_score) > absf(front_score): direction = "ขวา" if side_score > 0 else "ซ้าย"
-	hud_direction.text = "%s อยู่%s • เหลือ %.0f เมตร" % ["จุดก่อสร้าง" if carried else "กองอิฐ", direction, player_position.distance_to(destination)]
+	hud_direction.text = "%s อยู่%s • เหลือ %.0f เมตร%s" % ["จุดก่อสร้าง" if carried else "กองอิฐ", direction, player_position.distance_to(destination), " • พายุทรายแรง" if storm_strength > 0.65 else ""]
 	if hint_time > 0.0:
 		hud_prompt.text = hint
 	elif placed == TOTAL:
 		hud_prompt.text = "สร้างพีระมิดสำเร็จ! กด Esc เพื่อกลับเมนู"
 	else:
-		hud_prompt.text = "เมาส์: มอง  •  WASD / ลูกศร: เดิน  •  E / Space: หยิบหรือวาง" + ("  •  B: ร้าน" if mode == "normal" else "") + "  •  M: เสียง"
+		hud_prompt.text = "เมาส์: มอง  •  WASD: เดิน  •  E / Space: หยิบ-วาง" + ("  •  B: ร้าน" if mode == "normal" else "") + "  •  P: พัก  •  M: เสียง"
 	for i in range(shop_buttons.size()):
 		shop_buttons[i].disabled = upgrades[i] or coins < [25, 60, 110][i]
 		if upgrades[i]: shop_buttons[i].text = ["รองเท้าเร็ว ✓", "รถเข็นอิฐ ✓", "ผ้าคลุมกันลม ✓"][i]
