@@ -603,11 +603,14 @@ func start_game(new_mode: String) -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if placed >= TOTAL else Input.MOUSE_MODE_CAPTURED
 	refresh_pyramid()
 	update_player_visuals()
-	set_hint("เดินไปวงแหวนที่กองอิฐด้านซ้าย แล้วกด E")
+	if placed >= TOTAL:
+		set_hint("สร้างพีระมิดสำเร็จแล้ว!")
+	else:
+		set_hint("เดินไปวงแหวนที่กองอิฐด้านซ้าย แล้วกด E")
 	update_ui()
 
 func _process(delta: float) -> void:
-	if mode != "" and not paused:
+	if mode != "" and not paused and placed < TOTAL:
 		storm_time += delta
 		storm_strength = pow((sin(storm_time * 0.23) + 1.0) * 0.5, 3.0)
 		desert_environment.fog_density = 0.007 + storm_strength * 0.008
